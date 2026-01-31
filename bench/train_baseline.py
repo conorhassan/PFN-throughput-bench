@@ -187,18 +187,40 @@ def main() -> None:
             f"amp_enabled={amp_enabled} amp_dtype={amp_dtype} grad_scaler={use_grad_scaler}"
         )
 
-    sdp_ctx = (
-        torch.backends.cuda.sdp_kernel(
-            enable_flash=True, enable_mem_efficient=True, enable_math=False
+    def sdp_context():
+        if device != "cuda":
+            return nullcontext()
+        if hasattr(torch.nn, "attention") and hasattr(
+            torch.nn.attention, "sdpa_kernel"
+        ):
+            if hasattr(torch.nn.attention, "SDPBackend"):
+                try:
+                    backends = [
+                        torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+                        torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
+                    ]
+                    return torch.nn.attention.sdpa_kernel(backends)
+                except TypeError:
+                    return torch.nn.attention.sdpa_kernel(
+                        enable_flash=True,
+                        enable_mem_efficient=True,
+                        enable_math=False,
+                    )
+            return torch.nn.attention.sdpa_kernel(
+                enable_flash=True,
+                enable_mem_efficient=True,
+                enable_math=False,
+            )
+        return torch.backends.cuda.sdp_kernel(
+            enable_flash=True,
+            enable_mem_efficient=True,
+            enable_math=False,
         )
-        if device == "cuda"
-        else nullcontext()
-    )
-    amp_ctx = (
-        torch.autocast(device_type="cuda", dtype=amp_dtype)
-        if amp_enabled
-        else nullcontext()
-    )
+
+    def amp_context():
+        if not amp_enabled:
+            return nullcontext()
+        return torch.autocast(device_type="cuda", dtype=amp_dtype)
 
     def sync():
         if device == "cuda":
@@ -241,7 +263,7 @@ def main() -> None:
                 args.m,
                 args.n,
             )
-            with sdp_ctx, amp_ctx:
+            with sdp_context(), amp_context():
                 out = model(batch)
             loss = out["loss"]
             if use_grad_scaler:
@@ -280,7 +302,7 @@ def main() -> None:
             )
             data_time += dt
 
-            with sdp_ctx, amp_ctx:
+            with sdp_context(), amp_context():
                 out, dt = timed_section(lambda: model(batch))
             fwd_time += dt
             loss = out["loss"]
