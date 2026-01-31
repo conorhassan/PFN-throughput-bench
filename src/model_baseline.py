@@ -50,15 +50,10 @@ class ACETransformerEncoderLayer(TransformerEncoderLayer):
     def _sa_block(
         self,
         x: Tensor,
-        attn_mask: Optional[Tensor],
+        num_ctx: int,
         key_padding_mask: Optional[Tensor],
         is_causal: bool = False,
     ) -> Tensor:
-        if attn_mask is None:
-            raise ValueError("attn_mask is required to infer num_ctx")
-        slice_ = attn_mask[0, :]
-        num_ctx = int((slice_ == 0).sum().item())
-
         x = self.self_attn(
             x,
             x[:, :num_ctx, :],
@@ -69,6 +64,21 @@ class ACETransformerEncoderLayer(TransformerEncoderLayer):
             is_causal=is_causal,
         )[0]
         return self.dropout1(x)
+
+    def forward(
+        self,
+        x: Tensor,
+        num_ctx: int,
+        key_padding_mask: Optional[Tensor] = None,
+        is_causal: bool = False,
+    ) -> Tensor:
+        if self.norm_first:
+            x = x + self._sa_block(self.norm1(x), num_ctx, key_padding_mask, is_causal)
+            x = x + self._ff_block(self.norm2(x))
+        else:
+            x = self.norm1(x + self._sa_block(x, num_ctx, key_padding_mask, is_causal))
+            x = self.norm2(x + self._ff_block(x))
+        return x
 
 
 class TNPDEncoder(nn.Module):
@@ -81,29 +91,26 @@ class TNPDEncoder(nn.Module):
         num_layers: int,
     ) -> None:
         super().__init__()
-        encoder_layer = ACETransformerEncoderLayer(
-            d_model=d_model,
-            nhead=n_head,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            activation=F.silu,
+        self.layers = nn.ModuleList(
+            [
+                ACETransformerEncoderLayer(
+                    d_model=d_model,
+                    nhead=n_head,
+                    dim_feedforward=dim_feedforward,
+                    dropout=dropout,
+                    batch_first=True,
+                    activation=F.silu,
+                )
+                for _ in range(num_layers)
+            ]
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
-
-    @staticmethod
-    def create_mask(batch: Batch, device: torch.device) -> tuple[Tensor, int]:
-        num_ctx = batch.xc.shape[1]
-        num_tar = batch.xt.shape[1]
-        num_all = num_ctx + num_tar
-
-        mask = torch.full((num_all, num_all), float("-inf"), device=device)
-        mask[:, :num_ctx] = 0.0
-        return mask, num_tar
 
     def forward(self, batch: Batch, embeddings: Tensor) -> Tensor:
-        mask, num_tar = self.create_mask(batch, embeddings.device)
-        out = self.encoder(embeddings, mask=mask)
+        num_ctx = batch.xc.shape[1]
+        num_tar = batch.xt.shape[1]
+        out = embeddings
+        for layer in self.layers:
+            out = layer(out, num_ctx=num_ctx)
         return out[:, -num_tar:]
 
 
