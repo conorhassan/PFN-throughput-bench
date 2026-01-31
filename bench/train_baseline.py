@@ -109,6 +109,11 @@ def main() -> None:
     parser.add_argument("--max-batch", type=int, default=64)
     parser.add_argument("--batch-search-warmup", type=int, default=1)
     parser.add_argument("--batch-search-repeats", type=int, default=2)
+    parser.add_argument(
+        "--allow-fallback",
+        action="store_true",
+        help="Allow non-Flash SDPA backends if Flash is unavailable.",
+    )
     parser.add_argument("--features", type=int, default=10)
     parser.add_argument("--m", type=int, default=100000)
     parser.add_argument("--n", type=int, default=2048)
@@ -140,6 +145,7 @@ def main() -> None:
     amp_enabled = args.amp and device == "cuda"
     amp_dtype = resolve_amp_dtype(args.dtype)
     use_grad_scaler = amp_enabled and amp_dtype == torch.float16
+    require_flash = not args.allow_fallback
 
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available.")
@@ -186,6 +192,7 @@ def main() -> None:
         print(
             f"amp_enabled={amp_enabled} amp_dtype={amp_dtype} grad_scaler={use_grad_scaler}"
         )
+        print(f"flash_only={require_flash}")
 
     def sdp_context():
         if device != "cuda":
@@ -194,26 +201,20 @@ def main() -> None:
             torch.nn.attention, "sdpa_kernel"
         ):
             if hasattr(torch.nn.attention, "SDPBackend"):
-                try:
-                    backends = [
-                        torch.nn.attention.SDPBackend.FLASH_ATTENTION,
-                        torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
-                    ]
-                    return torch.nn.attention.sdpa_kernel(backends)
-                except TypeError:
-                    return torch.nn.attention.sdpa_kernel(
-                        enable_flash=True,
-                        enable_mem_efficient=True,
-                        enable_math=False,
-                    )
+                backends = [
+                    torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+                ]
+                if not require_flash:
+                    backends.append(torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION)
+                return torch.nn.attention.sdpa_kernel(backends)
             return torch.nn.attention.sdpa_kernel(
                 enable_flash=True,
-                enable_mem_efficient=True,
+                enable_mem_efficient=not require_flash,
                 enable_math=False,
             )
         return torch.backends.cuda.sdp_kernel(
             enable_flash=True,
-            enable_mem_efficient=True,
+            enable_mem_efficient=not require_flash,
             enable_math=False,
         )
 
@@ -334,12 +335,17 @@ def main() -> None:
             loss_val = loss.item()
             bar_len = 30
             filled = int(bar_len * done / num_steps)
-            bar = "=" * filled + ">" * (1 if filled < bar_len else 0) + "." * (bar_len - filled - 1)
+            bar = (
+                "=" * filled
+                + ">" * (1 if filled < bar_len else 0)
+                + "." * (bar_len - filled - 1)
+            )
             print(
                 f"\r  [{bar}] {done}/{num_steps} "
                 f"loss={loss_val:.4e} "
                 f"elapsed={elapsed:.1f}s eta={eta:.1f}s",
-                end="", flush=True,
+                end="",
+                flush=True,
             )
             if done == num_steps:
                 print()
@@ -427,7 +433,9 @@ def main() -> None:
         batch_size = max_batch
         print(f"  => max batch size = {max_batch}")
         steps = math.ceil(args.num_tasks / batch_size)
-        print(f"--- training {steps} steps (batch={batch_size}, tasks={args.num_tasks}) ---")
+        print(
+            f"--- training {steps} steps (batch={batch_size}, tasks={args.num_tasks}) ---"
+        )
         metrics = run_steps(
             batch_size,
             steps,
@@ -441,7 +449,9 @@ def main() -> None:
         opt_time = metrics["opt_time"]
         total_tasks = args.num_tasks
     else:
-        print(f"--- training {steps} steps (batch={batch_size}, tasks={total_tasks}) ---")
+        print(
+            f"--- training {steps} steps (batch={batch_size}, tasks={total_tasks}) ---"
+        )
         metrics = run_steps(
             args.batch_size,
             steps,
@@ -513,6 +523,7 @@ def main() -> None:
                 "batch_search_warmup": args.batch_search_warmup,
                 "batch_search_repeats": args.batch_search_repeats,
                 "max_batch_found": max_batch,
+                "flash_only": require_flash,
                 "d_model": args.d_model,
                 "d_ff": args.d_ff,
                 "n_head": args.n_head,
