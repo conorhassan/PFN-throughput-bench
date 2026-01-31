@@ -282,6 +282,7 @@ def main() -> None:
         fwd_time = 0.0
         bwd_time = 0.0
         opt_time = 0.0
+        step_start = time.perf_counter()
         for step_idx in range(num_steps):
             batch_seed = seed_base + warmup_steps + step_idx
             batch, dt = timed_section(
@@ -327,9 +328,21 @@ def main() -> None:
                 )
                 opt_time += dt
 
-            if print_every and (step_idx + 1) % print_every == 0:
-                loss_val = loss.item()
-                print(f"step {step_idx + 1}/{num_steps} loss={loss_val:.4e}")
+            elapsed = time.perf_counter() - step_start
+            done = step_idx + 1
+            eta = (elapsed / done) * (num_steps - done) if done > 0 else 0
+            loss_val = loss.item()
+            bar_len = 30
+            filled = int(bar_len * done / num_steps)
+            bar = "=" * filled + ">" * (1 if filled < bar_len else 0) + "." * (bar_len - filled - 1)
+            print(
+                f"\r  [{bar}] {done}/{num_steps} "
+                f"loss={loss_val:.4e} "
+                f"elapsed={elapsed:.1f}s eta={eta:.1f}s",
+                end="", flush=True,
+            )
+            if done == num_steps:
+                print()
 
         total_time = data_time + fwd_time + bwd_time + opt_time
         compute_time = fwd_time + bwd_time + opt_time
@@ -374,13 +387,17 @@ def main() -> None:
         first_bad = None
         candidate = args.min_batch
 
+        print(f"--- batch size search (range {args.min_batch}..{args.max_batch}) ---")
         while candidate <= args.max_batch:
+            print(f"  trying batch_size={candidate} ... ", end="", flush=True)
             result = try_batch(candidate, args.seed)
             entry = {"batch_size": candidate, "ok": result["ok"]}
             if result["ok"]:
+                print("OK")
                 last_good = candidate
                 candidate *= 2
             else:
+                print("OOM")
                 first_bad = candidate
                 candidate = args.max_batch + 1
             sweep_history.append(entry)
@@ -391,20 +408,26 @@ def main() -> None:
         if first_bad is not None:
             lo = last_good + 1
             hi = first_bad - 1
+            print(f"  binary search between {lo}..{hi}")
             while lo <= hi:
                 mid = (lo + hi) // 2
+                print(f"  trying batch_size={mid} ... ", end="", flush=True)
                 result = try_batch(mid, args.seed + 1000)
                 entry = {"batch_size": mid, "ok": result["ok"]}
                 if result["ok"]:
+                    print("OK")
                     last_good = mid
                     lo = mid + 1
                 else:
+                    print("OOM")
                     hi = mid - 1
                 sweep_history.append(entry)
 
         max_batch = last_good
         batch_size = max_batch
+        print(f"  => max batch size = {max_batch}")
         steps = math.ceil(args.num_tasks / batch_size)
+        print(f"--- training {steps} steps (batch={batch_size}, tasks={args.num_tasks}) ---")
         metrics = run_steps(
             batch_size,
             steps,
@@ -418,6 +441,7 @@ def main() -> None:
         opt_time = metrics["opt_time"]
         total_tasks = args.num_tasks
     else:
+        print(f"--- training {steps} steps (batch={batch_size}, tasks={total_tasks}) ---")
         metrics = run_steps(
             args.batch_size,
             steps,
