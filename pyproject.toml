@@ -1,0 +1,24 @@
+[project]
+name = "custom-triton-kernels"
+version = "0.1.0"
+description = "Training throughput benchmark for long-context transformer neural processes."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.3",
+    "triton>=2.1; platform_system != 'Darwin'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-xdist>=3.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
