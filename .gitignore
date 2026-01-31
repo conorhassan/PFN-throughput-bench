@@ -7,3 +7,4 @@ build/
 .ruff_cache/
 *.so
 uv.lock
+amortized-conditioning-engine/
