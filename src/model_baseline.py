@@ -6,6 +6,7 @@ import torch
 from torch import nn, Tensor
 from torch.nn import TransformerEncoderLayer
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 
 @dataclass
@@ -89,8 +90,12 @@ class TNPDEncoder(nn.Module):
         n_head: int,
         dropout: float,
         num_layers: int,
+        checkpoint: bool = False,
+        checkpoint_interval: int = 1,
     ) -> None:
         super().__init__()
+        if checkpoint_interval < 1:
+            raise ValueError("checkpoint_interval must be >= 1")
         self.layers = nn.ModuleList(
             [
                 ACETransformerEncoderLayer(
@@ -104,13 +109,27 @@ class TNPDEncoder(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self.checkpoint = checkpoint
+        self.checkpoint_interval = checkpoint_interval
 
     def forward(self, batch: Batch, embeddings: Tensor) -> Tensor:
         num_ctx = batch.xc.shape[1]
         num_tar = batch.xt.shape[1]
         out = embeddings
-        for layer in self.layers:
-            out = layer(out, num_ctx=num_ctx)
+        for idx, layer in enumerate(self.layers):
+            if self.checkpoint and (idx % self.checkpoint_interval == 0):
+
+                def layer_forward(x, layer=layer):
+                    return layer(x, num_ctx=num_ctx)
+
+                out = torch_checkpoint(
+                    layer_forward,
+                    out,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                out = layer(out, num_ctx=num_ctx)
         return out[:, -num_tar:]
 
 
@@ -185,6 +204,8 @@ class BaselineTransformerNP(nn.Module):
         emb_depth: int = 2,
         emb_hidden: Optional[int] = None,
         dropout: float = 0.0,
+        checkpoint: bool = False,
+        checkpoint_interval: int = 1,
     ) -> None:
         super().__init__()
         emb_hidden = emb_hidden or d_model
@@ -195,6 +216,8 @@ class BaselineTransformerNP(nn.Module):
             n_head=n_head,
             dropout=dropout,
             num_layers=num_layers,
+            checkpoint=checkpoint,
+            checkpoint_interval=checkpoint_interval,
         )
         self.head = MixtureGaussianHead(
             d_model=d_model,

@@ -121,6 +121,8 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--checkpoint", action="store_true")
+    parser.add_argument("--checkpoint-interval", type=int, default=1)
 
     parser.add_argument("--sigma-b0", type=float, default=1.0)
     parser.add_argument("--sigma-beta", type=float, default=1.0)
@@ -170,6 +172,8 @@ def main() -> None:
         emb_depth=args.emb_depth,
         emb_hidden=args.emb_hidden,
         dropout=0.0,
+        checkpoint=args.checkpoint,
+        checkpoint_interval=args.checkpoint_interval,
     ).to(device=device, dtype=dtype)
 
     optimizer = torch.optim.AdamW(
@@ -193,6 +197,9 @@ def main() -> None:
             f"amp_enabled={amp_enabled} amp_dtype={amp_dtype} grad_scaler={use_grad_scaler}"
         )
         print(f"flash_only={require_flash}")
+    print(
+        f"checkpoint={args.checkpoint} checkpoint_interval={args.checkpoint_interval}"
+    )
 
     def sdp_context():
         if device != "cuda":
@@ -517,6 +524,8 @@ def main() -> None:
                 "total_points": total_points,
                 "num_tasks": total_tasks,
                 "steps": steps,
+                "checkpoint": args.checkpoint,
+                "checkpoint_interval": args.checkpoint_interval,
                 "find_max_batch": args.find_max_batch,
                 "min_batch": args.min_batch,
                 "max_batch": args.max_batch,
